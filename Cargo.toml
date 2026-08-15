@@ -1,0 +1,49 @@
+[package]
+name = "mcpg-plugin-backend-ftp"
+version = "0.1.0-alpha.15"
+license = "Apache-2.0"
+edition = "2024"
+description = """
+FTP / FTPS file-integration backend binding plugin for mcpg. Lists a
+directory, gets a file, or puts a file over FTP — with explicit AUTH-TLS
+(FTPS) required by default — as MCP tools/resources, with path-traversal
+defense and a size cap. The transport is suppaftp on a pure-Rust rustls
+(ring) TLS stack; no openssl / native-tls. Complements the sftp backend.
+"""
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+cdylib-export = []
+static-firstparty = []
+# Gates the docker-backed FTP integration suite so plain `cargo test` stays
+# cheap. Run: `cargo test -p mcpg-plugin-backend-ftp --features integration-tests`.
+integration-tests = []
+
+[dependencies]
+mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+mcpg-plugin-sdk      = { git = "https://github.com/mcpg-dev/mcpg-plugin-sdk", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13", features = ["static-firstparty"] }
+mcpg-plugin-host     = { git = "https://github.com/mcpg-dev/mcpg-plugin-host", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+async-trait    = "0.1"
+base64         = "0.22"
+chrono         = { version = "0.4", features = ["clock"] }
+metrics        = "0.24"
+# FTP / FTPS transport. The async tokio runtime + rustls (ring) TLS — NO
+# native-tls / openssl. The cdylib bridge `block_on`s the async client.
+suppaftp       = { version = "9", default-features = false, features = ["tokio", "tokio-rustls-ring", "async-secure"] }
+# Build the rustls ClientConfig the FTPS connector wraps (ring provider, no
+# aws-lc-rs/openssl); webpki-roots supplies Mozilla's trust anchors.
+tokio-rustls   = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots   = "1"
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+tokio          = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
+tracing        = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "time"] }
+async-trait = "0.1"
+# Docker-backed FTP integration test (async runner). Dev-dep only.
+testcontainers = "0.27"

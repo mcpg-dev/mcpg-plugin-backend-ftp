@@ -1,0 +1,24 @@
+schema: mcpg.dev/plugin/v1
+id: dev.mcpg.backend.ftp
+name: FTP Binding
+license: Apache-2.0
+description: |
+  Lists a directory, gets a file, or puts a file over FTP / FTPS as MCP tools
+  and resources. `op: list` returns directory entries; `op: get` returns a
+  file's contents (text or base64); `op: put` writes a file from the
+  `content`/`text` argument. The target path comes from the call arguments
+  (`..` rejected) and is joined under the operator-configured `path` base.
+  Explicit FTPS (AUTH TLS) is required by default (`tls: true`); set
+  `tls: false` only for plaintext FTP on a trusted network. The transport is
+  suppaftp on a pure-Rust rustls (ring) TLS stack (no openssl / native-tls);
+  the password resolves through the gateway secret-resolver (`${env.X}` /
+  `vault://...`). With `surface: resource` a binding instead exposes files as
+  MCP resources — `resources/list` enumerates the `path` directory into one
+  resource per file and `resources/read` (uri template `ftp://{path}`) fetches
+  a file's bytes. Also ships a `watch_strategy` (kind `ftp_dir_poll`) that
+  polls a directory listing on a cadence and signals a change when the listing
+  fingerprint moves. Complements the sftp backend.
+class: backend
+runtime: native-cdylib-v1
+protocol_version: "1.0"
+required_capabilities: [network_outbound]
