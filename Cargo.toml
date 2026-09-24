@@ -1,6 +1,6 @@
 [package]
 name = "mcpg-plugin-backend-ftp"
-version = "0.1.0-alpha.32"
+version = "0.1.0-alpha.38"
 license = "Apache-2.0"
 edition = "2024"
 description = """
@@ -23,16 +23,16 @@ static-firstparty = []
 integration-tests = []
 
 [dependencies]
-mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.29", version = "=0.1.0-beta.29" }
-mcpg-plugin-sdk      = { git = "https://github.com/mcpg-dev/mcpg-plugin-sdk", tag = "v0.1.0-beta.30", version = "=0.1.0-beta.30", features = ["static-firstparty"] }
-mcpg-plugin-host     = { git = "https://github.com/mcpg-dev/mcpg-plugin-host", tag = "v0.1.0-beta.31", version = "=0.1.0-beta.31" }
+mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.35", version = "=0.1.0-beta.35" }
+mcpg-plugin-sdk      = { git = "https://github.com/mcpg-dev/mcpg-plugin-sdk", tag = "v0.1.0-beta.36", version = "=0.1.0-beta.36", features = ["static-firstparty"] }
+mcpg-plugin-host     = { git = "https://github.com/mcpg-dev/mcpg-plugin-host", tag = "v0.1.0-beta.37", version = "=0.1.0-beta.37" }
 async-trait    = "0.1"
-base64         = "0.22"
+base64         = "0.23"
 chrono         = { version = "0.4", features = ["clock"] }
 metrics        = "0.24"
 # FTP / FTPS transport. The async tokio runtime + rustls (ring) TLS — NO
 # native-tls / openssl. The cdylib bridge `block_on`s the async client.
-suppaftp       = { version = "9", default-features = false, features = ["tokio", "tokio-rustls-ring", "async-secure"] }
+suppaftp       = { version = "12", default-features = false, features = ["tokio", "tokio-rustls-ring", "async-secure"] }
 # Build the rustls ClientConfig the FTPS connector wraps (ring provider, no
 # aws-lc-rs/openssl); webpki-roots supplies Mozilla's trust anchors.
 tokio-rustls   = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
