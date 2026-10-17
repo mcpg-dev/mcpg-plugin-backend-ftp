@@ -29,14 +29,19 @@ enum FtpSession {
     Secure(Box<AsyncRustlsFtpStream>),
 }
 
-/// Build a rustls `ClientConfig` over the webpki Mozilla trust anchors (ring
-/// provider — no openssl / native-tls).
-fn rustls_client_config() -> Arc<ClientConfig> {
+/// Build a rustls `ClientConfig` over the webpki Mozilla trust anchors. The
+/// ring provider is named: a build that links both rustls providers has no
+/// default.
+fn rustls_client_config() -> Result<Arc<ClientConfig>, String> {
     let roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Arc::new(config)
+    let config = ClientConfig::builder_with_provider(Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| format!("FTPS TLS configuration: {e}"))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(Arc::new(config))
 }
 
 /// Connect, optionally upgrade to FTPS (explicit AUTH TLS), and authenticate.
@@ -46,7 +51,7 @@ async fn open_session(conn: &FtpConn) -> Result<FtpSession, String> {
         let unsecured = AsyncRustlsFtpStream::connect(&addr)
             .await
             .map_err(|e| format!("FTP connect failed: {e}"))?;
-        let connector = TlsConnector::from(rustls_client_config());
+        let connector = TlsConnector::from(rustls_client_config()?);
         let mut secure = unsecured
             .into_secure(AsyncRustlsConnector::from(connector), &conn.host)
             .await
@@ -104,6 +109,40 @@ pub async fn list(conn: &FtpConn, path: &str) -> Result<Vec<Value>, String> {
             .map_err(|e| format!("FTP list '{path}' failed: {e}"))?,
     };
     Ok(lines.iter().map(|l| line_to_json(l)).collect())
+}
+
+/// One FTP session that lists the directories under a root, for a watch
+/// that walks a tree.
+pub struct FtpLister {
+    session: FtpSession,
+    root: String,
+}
+
+impl FtpLister {
+    /// Connect and log in; directories are listed under `root`.
+    pub async fn open(conn: &FtpConn, root: &str) -> Result<Self, String> {
+        Ok(Self {
+            session: open_session(conn).await?,
+            root: root.to_owned(),
+        })
+    }
+
+    /// The entries of the directory `relative` to the root (`""` for the
+    /// root itself).
+    pub async fn list(&mut self, relative: &str) -> Result<Vec<Value>, String> {
+        let dir = match (self.root.as_str(), relative) {
+            (root, "") => root.to_owned(),
+            (".", _) => relative.to_owned(),
+            (root, _) => format!("{}/{relative}", root.trim_end_matches('/')),
+        };
+        let arg = if dir == "." { None } else { Some(dir.as_str()) };
+        let lines = match &mut self.session {
+            FtpSession::Plain(s) => s.list(arg).await,
+            FtpSession::Secure(s) => s.list(arg).await,
+        }
+        .map_err(|e| format!("FTP list '{dir}' failed: {e}"))?;
+        Ok(lines.iter().map(|l| line_to_json(l)).collect())
+    }
 }
 
 /// Read a file's contents (capped at `max_bytes`). Reads one extra byte to
@@ -203,10 +242,16 @@ pub fn line_to_json(line: &str) -> Value {
         } else {
             "file"
         };
+        let mtime = file
+            .modified()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs());
         return json!({
             "name": file.name(),
             "type": kind,
             "size": file.size(),
+            "mtime": mtime,
         });
     }
     json!({ "name": line, "type": "unknown", "size": Value::Null })
@@ -226,6 +271,11 @@ pub fn decode_content(data: &[u8]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ftps_configuration_needs_no_default_provider() {
+        assert!(rustls_client_config().is_ok());
+    }
 
     #[test]
     fn resolve_rejects_traversal() {
@@ -254,6 +304,10 @@ mod tests {
         assert_eq!(v["name"], json!("report.csv"));
         assert_eq!(v["type"], json!("file"));
         assert_eq!(v["size"], json!(4096));
+        assert!(
+            v["mtime"].is_u64(),
+            "the listed time, so a same-size overwrite shows"
+        );
     }
 
     #[test]

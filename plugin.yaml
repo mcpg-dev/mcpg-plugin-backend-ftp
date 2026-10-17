@@ -16,9 +16,30 @@ description: |
   MCP resources — `resources/list` enumerates the `path` directory into one
   resource per file and `resources/read` (uri template `ftp://{path}`) fetches
   a file's bytes. Also ships a `watch_strategy` (kind `ftp_dir_poll`) that
-  polls a directory listing on a cadence and signals a change when the listing
-  fingerprint moves. Complements the sftp backend.
+  lists a directory (and its subdirectories with `recursive`, files filtered
+  by an optional `pattern` glob) on a cadence: a resource watch gets a change
+  when the listing moves, and an MCP Events source gets each file created,
+  modified or deleted as the shared `object.changed` event, resumed exactly
+  after a restart. Complements the sftp backend.
 class: backend
 runtime: native-cdylib-v1
 protocol_version: "1.0"
 required_capabilities: [network_outbound]
+# MCP Events: the directory as an inventory of files.
+watch_strategies:
+  - kind: ftp_dir_poll
+    placement: single_owner
+    resume: true
+    event_types:
+      - name: object.changed
+        description: A file in the watched FTP directory was created, modified or deleted.
+        payload_schema:
+          type: object
+          required: [op, store, location, key]
+          properties:
+            op: { enum: [created, modified, deleted] }
+            store: { type: string, description: The kind of store - ftp here. }
+            location: { type: string, description: "ftp://host:port/directory, without credentials." }
+            key: { type: string, description: The file's path relative to location. }
+            size: { type: integer }
+            modifiedAt: { type: string, description: When it last changed as LIST reports it, RFC 3339. }

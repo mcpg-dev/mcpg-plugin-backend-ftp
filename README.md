@@ -152,34 +152,48 @@ populates `written`.
 ## Build / test
 
 ```bash
-nx build mcpg-plugin-backend-ftp
-nx test  mcpg-plugin-backend-ftp                                    # unit tests
-cargo test -p mcpg-plugin-backend-ftp --features integration-tests  # against a live FTP server
-nx lint  mcpg-plugin-backend-ftp
+cargo build  -p mcpg-plugin-backend-ftp
+cargo test   -p mcpg-plugin-backend-ftp                              # unit tests
+cargo test   -p mcpg-plugin-backend-ftp --features integration-tests # against a live FTP server
+cargo clippy -p mcpg-plugin-backend-ftp --all-targets -- -D warnings
 ```
 
 The integration suite targets an operator-provided FTP/FTPS server (gated on
 `FTP_TEST_HOST` / `FTP_TEST_USER` / `FTP_TEST_PASSWORD`, optional
 `FTP_TEST_PORT` / `FTP_TEST_PATH` / `FTP_TEST_TLS`) and is **skipped** when
-`FTP_TEST_HOST` is unset. A containerised server is not used because FTP
-passive-mode advertises a server-chosen data port that testcontainers' random
-host-port remapping cannot rewrite, so the data channel is unreachable without
-host-network / fixed-port wiring.
+`FTP_TEST_HOST` is unset. `MCPG_REQUIRE_SERVICE=1` makes a missing server a
+failure; the CI row `Event sources / file-shares` sets it and starts the
+server on `127.0.0.1`. A containerised server is not started by the suite
+because FTP passive-mode advertises a server-chosen data port that
+testcontainers' random host-port remapping cannot rewrite. A server on the
+host network works; Pure-FTPd advertises passive ports 30000-30009.
+
+```bash
+docker run -d --rm --name ftp-it --network host \
+  -e PUBLICHOST=127.0.0.1 -e FTP_USER_NAME=testuser -e FTP_USER_PASS=testpass \
+  -e FTP_USER_HOME=/home/testuser \
+  stilliard/pure-ftpd:trixie-1.0.50@sha256:6435d108eb3fad29730f1b6748c1d49f3fa13e5d0fb49979ec3e0e96c5dbd94a
+FTP_TEST_HOST=127.0.0.1 FTP_TEST_USER=testuser FTP_TEST_PASSWORD=testpass \
+  cargo test -p mcpg-plugin-backend-ftp --features integration-tests
+```
+
+Besides the put → list → get round-trip, the suite runs an `ftp_dir_poll`
+event source through a create, a modification, a delete and a restart.
 
 ## Directory watch (`ftp_dir_poll`)
 
 This plugin also ships a `watch_strategy` entity (kind `ftp_dir_poll`) that
-polls a directory on a cadence and emits a resource-change signal when the
-listing changes. FTP has no native change-push channel, so each tick reopens a
-connection, runs `LIST` on the watched directory, and folds the entries into a
-deterministic **fingerprint** — the sorted set of `name|size`, joined by
-newlines. The shared SDK helper establishes a baseline on the first successful
-poll (no spurious startup fire) and emits whenever the fingerprint moves.
+watches a directory by polling. FTP has no native change-push channel, so
+each listing opens one connection, runs `LIST` on the watched directory (and
+its subdirectories with `recursive`), and compares the files with the last
+listing the gateway stored. A resource watch gets
+`notifications/resources/updated` when a file is added, removed, or modified;
+an MCP Events source gets each such file as the shared `object.changed` event
+(see MCP Events, "Files and objects").
 
-> **mtime limitation.** FTP `LIST` exposes name / type / size but **no reliable
-> mtime**, so the fingerprint is `name|size` only. Adds, removes, renames and
-> size changes are detected; a **same-size in-place overwrite** of a file is
-> **not** detected.
+> **Time precision.** `LIST` reports a file's time to the minute at best.
+> Adds, removes, renames, size changes and time changes are detected; an
+> overwrite that keeps the size within the same minute is **not**.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
@@ -189,21 +203,60 @@ poll (no spurious startup fire) and emits whenever the fingerprint moves.
 | `password` | string (required) | — | Resolved via the gateway secret-resolver (`${env.X}` / `vault://…`); `cred://` is rejected. |
 | `path` | string | `""` | Directory to watch (`""` = login dir; `..` rejected). Alias: `root`. |
 | `tls` | bool | `true` | Require explicit FTPS (AUTH TLS). |
-| `interval_ms` | int | `60000` | Poll cadence (floored at 250 ms by the SDK helper). |
-| `timeout_ms` | int | `10000` | Per-tick connect + list budget. |
+| `interval_ms` | int | `60000` | Listing cadence (at least 250 ms). |
+| `timeout_ms` | int | `10000` | Budget of one listing: connect and every directory. |
+| `recursive` | bool | `false` | Go into subdirectories, at most 1000 of them. |
+| `pattern` | string | — | Keep only the files whose path relative to the directory matches this glob: `*` stays in a directory, `**` crosses them (`**/*.csv`). |
+| `max_files` | int | `10000` | Most files listed (1 to 100000); past it the first in path order are kept, with a warning. |
+| `start_at` | `now` \| `existing` | `now` | `now`: the files there at a first start are the baseline. `existing`: each is reported as created. |
+| `snapshot_bytes` | int | `131072` | Largest snapshot of the listing an event carries, for an exact restart (at most 196608). |
+| `max_in_flight` | int | `256` | Most changes emitted ahead of the gateway's acknowledgements (1 to 1000). |
+| `ack_timeout_ms` | int | `60000` | How long a change waits for its acknowledgement before it is offered again. |
+
+Keys are file paths relative to `path`, with `/` between parts; `location`
+is `ftp://host:port/<directory>`, without credentials. A directory that
+cannot be listed fails the whole listing, and the next interval tries again,
+so a part that cannot be read is never reported as deleted. An unreachable
+server does not fail the watch: it is listed again at the next interval.
+
+As a resource watch:
 
 ```yaml
 mcp:
-  resources:
-    - uri: ftp://partner/inbox
-      name: Partner inbox
-      watch:
-        kind: ftp_dir_poll
-        host: "ftp.partner.example.com"
-        user: "svc-mcpg"
-        password: "${env.FTP_PASSWORD}"
-        path: "/inbound"
-        interval_ms: 30000
+  capabilities:
+    resources:
+      - uri: ftp://partner/inbox
+        name: Partner inbox
+        watch:
+          strategy:
+            type: plugin
+            kind: ftp_dir_poll
+            host: "ftp.partner.example.com"
+            user: "svc-mcpg"
+            password: "${env.FTP_PASSWORD}"
+            path: "/inbound"
+            interval_ms: 30000
+```
+
+As an MCP Events source, each file as `object.changed`:
+
+```yaml
+mcp:
+  capabilities:
+    events:
+      - name: partner.inbox
+        description: A file arrived in, changed in, or left the partner inbox.
+        source:
+          watch:
+            strategy:
+              type: plugin
+              kind: ftp_dir_poll
+              host: "ftp.partner.example.com"
+              user: "svc-mcpg"
+              password: "${env.FTP_PASSWORD}"
+              path: "/inbound"
+              recursive: true
+            event_type: object.changed
 ```
 
 ## Scope / deferred
